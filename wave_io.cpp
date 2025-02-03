@@ -101,11 +101,6 @@ void WaveIO::play(std::function<void(WaveIO*)> &&fn) {
         const size_t chunk_size = std::min(buffer_size, raw_bytes.size() - offset);
         const int frames = chunk_size / block_align;
 
-        // FFT PROCESSING
-        //process_fft(raw_bytes.data() + offset, frames);
-
-        //fn(this);
-
         ssize_t result;
 
         do {
@@ -122,7 +117,6 @@ void WaveIO::play(std::function<void(WaveIO*)> &&fn) {
             offset += result * block_align;
         }
 
-        //std::cout << get_progress() << "\n";
         fn(this);
     }
 
@@ -131,8 +125,8 @@ void WaveIO::play(std::function<void(WaveIO*)> &&fn) {
     }
 
     snd_pcm_drain(pcm_handle);
-
-    //std::cout << "play done" << std::endl;
+    snd_pcm_close(pcm_handle);
+    pcm_handle = nullptr;
 }
 
 Eigen::ArrayXf normalize_fit(const Eigen::VectorXcf &v) {
@@ -156,8 +150,6 @@ Eigen::ArrayXf normalize_fit(const Eigen::VectorXcf &v) {
 
 Eigen::ArrayXf normalize_clip(const Eigen::VectorXcf &v) {
     Eigen::ArrayXf out(v.size());
-    float abs_sum = std::abs(v.sum());
-    //std::cout << abs_sum << std::endl;
     const float N = v.size() * CLIP_DAMP_FACTOR;
     for (Eigen::Index i = 0; i < v.size(); i++) {
         out(i) = std::min(std::abs(v(i)) / N, 1.0f);
@@ -281,14 +273,11 @@ std::size_t WaveIO::get_current_playback_frame() const {
     const size_t current_playback_frame = (delay > static_cast<snd_pcm_sframes_t>(total_frames_written))
     ? 0
     : total_frames_written - delay;
-    std::size_t current_byte_position = current_playback_frame * block_align;
 
-    //std::cout << total_frames_written << ", " << delay << ", " << current_playback_frame << std::endl;
     return current_playback_frame;
 }
 
 bool WaveIO::is_playing() const {
-    const size_t offset = get_current_playback_frame() * block_align;
     snd_pcm_sframes_t delay;
     if (snd_pcm_delay(pcm_handle, &delay) < 0) {
         delay = 0;  // Handle errors gracefully
@@ -296,10 +285,7 @@ bool WaveIO::is_playing() const {
     if (delay < 3000) {
         snd_pcm_drain(pcm_handle);
     }
-    //std::cout << "--- " << offset << " / " << raw_bytes.size() << std::endl;
-    //std::cout << delay << std::endl;
     snd_pcm_state_t state = snd_pcm_state(pcm_handle);
-    //std::cout << "STATE: " << state << std::endl;
     return state == SND_PCM_STATE_RUNNING;
 }
 
