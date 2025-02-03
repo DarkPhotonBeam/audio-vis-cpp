@@ -54,7 +54,8 @@ private:
     void free_pcm();
 
     Eigen::ArrayXf normalized_fft;
-    Eigen::ArrayXf normalize_fft(const Eigen::VectorXcf &) const;
+
+    static Eigen::ArrayXf normalize_fft(const Eigen::VectorXcf &);
     void process_fmt_body();
     void process_fft();
 
@@ -77,6 +78,9 @@ public:
     [[nodiscard]] std::size_t get_buffer_size() const;
     std::size_t get_current_playback_frame() const;
     double get_progress() const;
+
+    // Lower number -> more smoothing
+    void set_smoothing_factor(float smoothing_factor);
 
     bool is_playing() const;
 

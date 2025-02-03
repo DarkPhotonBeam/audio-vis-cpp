@@ -3,7 +3,7 @@
 #define DEBUG
 #include "wave_io.h"
 #include <unistd.h>
-#define BAR_HEIGHT 32
+#define BAR_HEIGHT 64
 
 int main(const int argc, char *argv[]) {
   if (argc != 2) {
@@ -13,11 +13,12 @@ int main(const int argc, char *argv[]) {
   std::string path{argv[1]};
   try {
     WaveIO wave{path, 1<<12};
+    wave.set_smoothing_factor(9.0f);
 
     auto callback = [](WaveIO *obj) {
 
       const Eigen::ArrayXf *fft_arr = obj->fft();
-      Eigen::Index s = 64;
+      Eigen::Index s = 120;
       Eigen::ArrayXf compressed_arr(2 * s);
       compressed_arr << fft_arr->head(s), fft_arr->tail(s);
 
@@ -26,7 +27,7 @@ int main(const int argc, char *argv[]) {
       for (std::size_t i = 0; i < width; ++i) {
         for (std::size_t j = 0; j < BAR_HEIGHT; ++j) {
           const float ratio = static_cast<float>(j) / BAR_HEIGHT;
-          grid[i].push_back(ratio <= compressed_arr(i) ? 'x' : ' ');
+          grid[i].push_back(ratio <= compressed_arr(i) ? '|' : ' ');
         }
       }
       std::cout << "\033[H";

@@ -135,9 +135,7 @@ void WaveIO::play(std::function<void(WaveIO*)> &&fn) {
     //std::cout << "play done" << std::endl;
 }
 
-
-
-Eigen::ArrayXf WaveIO::normalize_fft(const Eigen::VectorXcf &v) const {
+Eigen::ArrayXf normalize_fit(const Eigen::VectorXcf &v) {
     float min_abs = std::numeric_limits<float>::max();
     float max_abs = std::numeric_limits<float>::min();
 
@@ -152,6 +150,23 @@ Eigen::ArrayXf WaveIO::normalize_fft(const Eigen::VectorXcf &v) const {
     out = ((v.array() - Eigen::ArrayXf::Constant(v.size(), min_abs)) / range).abs();
 
     return out;
+}
+
+#define CLIP_DAMP_FACTOR 256
+
+Eigen::ArrayXf normalize_clip(const Eigen::VectorXcf &v) {
+    Eigen::ArrayXf out(v.size());
+    float abs_sum = std::abs(v.sum());
+    //std::cout << abs_sum << std::endl;
+    const float N = v.size() * CLIP_DAMP_FACTOR;
+    for (Eigen::Index i = 0; i < v.size(); i++) {
+        out(i) = std::min(std::abs(v(i)) / N, 1.0f);
+    }
+    return out;
+}
+
+Eigen::ArrayXf WaveIO::normalize_fft(const Eigen::VectorXcf &v) {
+    return normalize_clip(v);
 }
 
 const Eigen::ArrayXf *WaveIO::fft() {
@@ -291,6 +306,10 @@ bool WaveIO::is_playing() const {
 double WaveIO::get_progress() const {
     const size_t offset = get_current_playback_frame() * block_align;
     return static_cast<double>(offset) / static_cast<double>(raw_bytes.size());
+}
+
+void WaveIO::set_smoothing_factor(const float smoothing_factor) {
+    this->smoothing_factor = smoothing_factor;
 }
 
 void WaveIO::free_pcm() {
