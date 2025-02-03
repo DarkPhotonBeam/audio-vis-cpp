@@ -18,6 +18,7 @@
 #include <functional>
 #include <Eigen/Dense>
 #include <chrono>
+#include <alsa/asoundlib.h>
 
 #define AUDIO_FORMAT_PCM 1
 
@@ -39,28 +40,33 @@ private:
     std::size_t buffer_size{1<<10};
     bool fmt_read{false};
 
+    std::size_t total_frames_written{0};
+
+    snd_pcm_t *pcm_handle = nullptr;
+    snd_pcm_hw_params_t *params = nullptr;
+
     std::chrono::time_point<std::chrono::system_clock> prev_time{};
     // Smaller value -> Less Smoothing
     float smoothing_factor{12.0f};
 
     bool fft_has_prev{false};
 
-
+    void free_pcm();
 
     Eigen::ArrayXf normalized_fft;
     Eigen::ArrayXf normalize_fft(const Eigen::VectorXcf &) const;
     void process_fmt_body();
-    void process_fft(const void*, int);
+    void process_fft();
 
 
 public:
     explicit WaveIO(std::string &file_path, std::size_t buffer_size = 1024);
 
     void play();
-    void play(std::function<void(const WaveIO*)> &&fn);
+    void play(std::function<void(WaveIO*)> &&fn);
 
     // Returns normalized fft of current buffer
-    const Eigen::ArrayXf *fft() const;
+    const Eigen::ArrayXf *fft();
 
     [[nodiscard]] uint32_t get_sample_rate() const;
     [[nodiscard]] uint32_t get_byte_rate() const;
@@ -69,6 +75,10 @@ public:
     [[nodiscard]] uint16_t get_bits_per_sample() const;
     [[nodiscard]] uint32_t get_data_size() const;
     [[nodiscard]] std::size_t get_buffer_size() const;
+    std::size_t get_current_playback_frame() const;
+    double get_progress() const;
+
+    bool is_playing() const;
 
     ~WaveIO();
 };

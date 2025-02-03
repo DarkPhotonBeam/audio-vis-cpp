@@ -2,7 +2,7 @@
 #include <iostream>
 #define DEBUG
 #include "wave_io.h"
-
+#include <unistd.h>
 #define BAR_HEIGHT 32
 
 int main(const int argc, char *argv[]) {
@@ -12,17 +12,21 @@ int main(const int argc, char *argv[]) {
   }
   std::string path{argv[1]};
   try {
-    WaveIO wave{path, 1<<10};
+    WaveIO wave{path, 1<<12};
 
-    auto callback = [](const WaveIO *obj) {
+    auto callback = [](WaveIO *obj) {
 
-      const Eigen::ArrayXf *left_norm = obj->fft();
-      const std::size_t width = static_cast<std::size_t>(left_norm->size());
+      const Eigen::ArrayXf *fft_arr = obj->fft();
+      Eigen::Index s = 64;
+      Eigen::ArrayXf compressed_arr(2 * s);
+      compressed_arr << fft_arr->head(s), fft_arr->tail(s);
+
+      const std::size_t width = static_cast<std::size_t>(compressed_arr.size());
       std::vector<std::vector<char>> grid{width};
       for (std::size_t i = 0; i < width; ++i) {
         for (std::size_t j = 0; j < BAR_HEIGHT; ++j) {
           const float ratio = static_cast<float>(j) / BAR_HEIGHT;
-          grid[i].push_back(ratio <= left_norm->operator()(i) ? 'x' : ' ');
+          grid[i].push_back(ratio <= compressed_arr(i) ? 'x' : ' ');
         }
       }
       std::cout << "\033[H";

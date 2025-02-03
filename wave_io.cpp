@@ -7,7 +7,6 @@
 #include <iostream>
 #include <cmath>
 #include <matplot/matplot.h>
-#include <alsa/asoundlib.h>
 #include <unsupported/Eigen/FFT>
 
 WaveIO::WaveIO(std::string &file_path, const std::size_t buffer_size): file_path(file_path), buffer_size(buffer_size) {
@@ -57,12 +56,14 @@ WaveIO::WaveIO(std::string &file_path, const std::size_t buffer_size): file_path
 }
 
 void WaveIO::play() {
-    play([](const WaveIO *obj){});
+    play([](WaveIO *obj){});
 }
 
-void WaveIO::play(std::function<void(const WaveIO*)> &&fn) {
-    snd_pcm_t *pcm_handle;
-    snd_pcm_hw_params_t *params;
+void WaveIO::play(std::function<void(WaveIO*)> &&fn) {
+    free_pcm();
+    total_frames_written = 0;
+    fft_has_prev = false;
+
     snd_pcm_open(&pcm_handle, "default", SND_PCM_STREAM_PLAYBACK, 0);
     snd_pcm_hw_params_malloc(&params);
     snd_pcm_hw_params_any(pcm_handle, params);
@@ -91,6 +92,7 @@ void WaveIO::play(std::function<void(const WaveIO*)> &&fn) {
     snd_pcm_hw_params_set_rate(pcm_handle, params, sample_rate, 0);
     snd_pcm_hw_params(pcm_handle, params);
     snd_pcm_hw_params_free(params);
+    params = nullptr;
     snd_pcm_prepare(pcm_handle);
 
     size_t offset = 0;
@@ -100,46 +102,60 @@ void WaveIO::play(std::function<void(const WaveIO*)> &&fn) {
         const int frames = chunk_size / block_align;
 
         // FFT PROCESSING
-        process_fft(raw_bytes.data() + offset, frames);
+        //process_fft(raw_bytes.data() + offset, frames);
 
-        fn(this);
+        //fn(this);
 
-        if (const ssize_t result = snd_pcm_writei(pcm_handle, raw_bytes.data() + offset, frames); result == -EPIPE) {
-            snd_pcm_prepare(pcm_handle);
-        } else if (result == -EAGAIN) {
-            snd_pcm_wait(pcm_handle, 1000);
+        ssize_t result;
+
+        do {
+            result = snd_pcm_writei(pcm_handle, raw_bytes.data() + offset, frames);
+            if (result == -EPIPE) {
+                snd_pcm_prepare(pcm_handle);
+            } else if (result == -EAGAIN) {
+                snd_pcm_wait(pcm_handle, 1000);
+            }
+        } while (result < 0);
+
+        if (result > 0) {
+            total_frames_written += result;
+            offset += result * block_align;
         }
 
-        offset += chunk_size;
+        //std::cout << get_progress() << "\n";
+        fn(this);
+    }
+
+    while (is_playing()) {
+        fn(this);
     }
 
     snd_pcm_drain(pcm_handle);
-    snd_pcm_close(pcm_handle);
+
+    //std::cout << "play done" << std::endl;
 }
 
-Eigen::ArrayXf WaveIO::normalize_fft(const Eigen::VectorXcf &v) const {
-    Eigen::VectorXf v_log(v.size());
-    for (Eigen::Index i = 0; i < v.size(); ++i) {
-        v_log(i) = 20. * std::log(std::abs(v(i)) + 1e-10);
-    }
 
+
+Eigen::ArrayXf WaveIO::normalize_fft(const Eigen::VectorXcf &v) const {
     float min_abs = std::numeric_limits<float>::max();
     float max_abs = std::numeric_limits<float>::min();
 
-    for (Eigen::Index i = 0; i < v_log.size(); i++) {
-        float abs = std::abs(v_log(i));
+    for (Eigen::Index i = 0; i < v.size(); i++) {
+        float abs = std::abs(v(i));
         min_abs = std::min(min_abs, abs);
         max_abs = std::max(max_abs, abs);
     }
 
     const float range = max_abs - min_abs;
-    Eigen::ArrayXf out(v_log.size());
-    out = ((v_log.array() - Eigen::ArrayXf::Constant(v_log.size(), min_abs)) / range).abs();
+    Eigen::ArrayXf out(v.size());
+    out = ((v.array() - Eigen::ArrayXf::Constant(v.size(), min_abs)) / range).abs();
 
     return out;
 }
 
-const Eigen::ArrayXf *WaveIO::fft() const {
+const Eigen::ArrayXf *WaveIO::fft() {
+    process_fft();
     return &normalized_fft;
 }
 
@@ -171,7 +187,11 @@ void WaveIO::process_fmt_body() {
     fmt_read = true;
 }
 
-void WaveIO::process_fft(const void *ptr, int frames) {
+void WaveIO::process_fft() {
+    const size_t offset = get_current_playback_frame() * block_align;
+    const size_t chunk_size = std::min(buffer_size, raw_bytes.size() - offset);
+    const int frames = chunk_size / block_align;
+    const void *ptr = raw_bytes.data() + offset;
     Eigen::FFT<float> fft;
     Eigen::VectorXf left_samples(frames);
     Eigen::VectorXf right_samples(frames);
@@ -190,12 +210,10 @@ void WaveIO::process_fft(const void *ptr, int frames) {
     const Eigen::Index half = left_fft.size() / 2;
     left_fft.tail(half) = right_fft.tail(half);
 
-    // remove some high frequencies
-    Eigen::Index amount = 100;
-    Eigen::VectorXcf stripped_fft(left_fft.size() - amount);
-    stripped_fft << left_fft.head(half - amount/2), left_fft.tail(half - amount / 2);
-
-    Eigen::ArrayXf normed_fft = normalize_fft(stripped_fft);
+    Eigen::ArrayXf normed_fft = normalize_fft(left_fft);
+    if (normed_fft.size() != left_fft.size()) {
+        throw std::runtime_error("normalized_fft failed");
+    }
     auto now = std::chrono::high_resolution_clock::now();
     if (!fft_has_prev) {
         normalized_fft = normed_fft;
@@ -203,9 +221,10 @@ void WaveIO::process_fft(const void *ptr, int frames) {
     } else {
         const std::chrono::duration<float> diff = now - prev_time;
         const float t = 1.0f - std::exp(-smoothing_factor * diff.count());
-        const Eigen::ArrayXf old = normalized_fft;
         for (Eigen::Index i = 0; i < normalized_fft.size(); ++i) {
-            normalized_fft(i) = old(i) + t * (normed_fft(i) - old(i));
+            const float old = normalized_fft(i);
+            const float new_val = i >= normed_fft.size() ? 0 : normed_fft(i);
+            normalized_fft(i) = old + t * (new_val - old);
         }
     }
     prev_time = now;
@@ -239,6 +258,54 @@ std::size_t WaveIO::get_buffer_size() const {
     return buffer_size;
 }
 
+std::size_t WaveIO::get_current_playback_frame() const {
+    snd_pcm_sframes_t delay;
+    if (snd_pcm_delay(pcm_handle, &delay) < 0) {
+        delay = 0;
+    }
+    const size_t current_playback_frame = (delay > static_cast<snd_pcm_sframes_t>(total_frames_written))
+    ? 0
+    : total_frames_written - delay;
+    std::size_t current_byte_position = current_playback_frame * block_align;
+
+    //std::cout << total_frames_written << ", " << delay << ", " << current_playback_frame << std::endl;
+    return current_playback_frame;
+}
+
+bool WaveIO::is_playing() const {
+    const size_t offset = get_current_playback_frame() * block_align;
+    snd_pcm_sframes_t delay;
+    if (snd_pcm_delay(pcm_handle, &delay) < 0) {
+        delay = 0;  // Handle errors gracefully
+    }
+    if (delay < 3000) {
+        snd_pcm_drain(pcm_handle);
+    }
+    //std::cout << "--- " << offset << " / " << raw_bytes.size() << std::endl;
+    //std::cout << delay << std::endl;
+    snd_pcm_state_t state = snd_pcm_state(pcm_handle);
+    //std::cout << "STATE: " << state << std::endl;
+    return state == SND_PCM_STATE_RUNNING;
+}
+
+double WaveIO::get_progress() const {
+    const size_t offset = get_current_playback_frame() * block_align;
+    return static_cast<double>(offset) / static_cast<double>(raw_bytes.size());
+}
+
+void WaveIO::free_pcm() {
+    if (pcm_handle) {
+        snd_pcm_drain(pcm_handle);
+        snd_pcm_close(pcm_handle);
+        pcm_handle = nullptr;
+    }
+    if (params) {
+        snd_pcm_hw_params_free(params);
+        params = nullptr;
+    }
+}
+
 WaveIO::~WaveIO() {
     if (stream.is_open()) stream.close();
+    free_pcm();
 }
