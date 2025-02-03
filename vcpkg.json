@@ -1,0 +1,6 @@
+{
+  "dependencies" : [ "alsa", "sdl3", "eigen3", {
+    "name" : "matplotplusplus",
+    "version>=" : "1.2.1"
+  } ]
+}
